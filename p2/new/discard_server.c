@@ -27,107 +27,83 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <netinet/sctp.h>
+#include <arpa/inet.h>
 #include <unistd.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <time.h>
-#include "Socket.h"
 
 #define BUFFER_SIZE (1<<16)
-#define MAX_CLIENTS 10
+#define MAX_CLIENTS 1
 
-typedef struct{
-	struct sockaddr_in6 client_addr;
-	socklen_t client_addr_len;
-	int fd;
-}Client;
-
-int
-main(int argc, char** argv)
+int main(int argc, char** argv)
 {
-	int fd, optval, clientCount = 0, i, len;
-	Client clients[MAX_CLIENTS];
-	struct sockaddr_in6 server_addr;
-	struct fd_set* read_set;
+	int fd, len, flags;
+	struct sockaddr_in server_addr, client_addr;
+	socklen_t client_len;
 	char buf[BUFFER_SIZE];
-	
-	read_set = (struct fd_set *)malloc(sizeof(struct fd_set));
 
-	fd = Socket(AF_INET6, SOCK_STREAM, 0);
-	optval = 1;
-	setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof optval);
-	optval = 0;
-	setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &optval, sizeof optval);
-	memset((void *) &server_addr, 0, sizeof(server_addr));
-	server_addr.sin6_family = AF_INET6;
-#ifdef HAVE_SIN_LEN
-	server_addr.sin6_len = sizeof(struct sockaddr_in6);
-#endif
-	server_addr.sin6_addr = in6addr_any;
-	server_addr.sin6_port = htons(atoi(argv[1]));
-	
-	Bind(fd, (const struct sockaddr *) &server_addr, sizeof(server_addr));
-	Listen(fd, MAX_CLIENTS);
-	
-	FD_ZERO(read_set);
-	
-	// Init Clients
-	for(i=0;i<MAX_CLIENTS;i++){clients[i].fd = -1;}
-	
-	for (;;) {	
-		FD_SET(fd, read_set);	
-		for(i=0;i<MAX_CLIENTS;i++){
-			if(clients[i].fd == -1)
-				continue;
-			FD_SET(clients[i].fd, read_set);	
-		}
-		
-		Select(fd+MAX_CLIENTS+1, read_set, (fd_set *) NULL,
-					(fd_set *) NULL,
-					(struct timeval *) NULL);
-
-		// Gibts eine Anfrage?
-		if(FD_ISSET(fd, read_set)){
-			printf("Anfrage angekommen\n");
-			// Neue Clients akzeptieren?
-			if(clientCount < MAX_CLIENTS){
-				i = 0;
-				// Freie Position suchen
-				while(clients[i].fd != -1){i++;}
-				// Reinigung
-				memset((void *) &(clients[i].client_addr), 0, sizeof(clients[i].client_addr));
-				memset((void *) &(clients[i].client_addr_len), 0, sizeof(clients[i].client_addr_len));
-				// Neuer Client
-				clients[i].fd = Accept(fd, (struct sockaddr *) &(clients[i].client_addr),
-												&(clients[i].client_addr_len));
-				// Anzahl der Client +1
-				clientCount++;
-				// Zur Menge hinzufuegen
-				FD_SET(clients[i].fd, read_set);
-			}
-		}
-		
-		for(i=0;i<MAX_CLIENTS;i++){
-			// Suche einen Client
-			if(clients[i].fd == -1)
-				continue;
-			// Wurde der Client belaestigt?
-			if(FD_ISSET(clients[i].fd, read_set)){
-				len = Recv(clients[i].fd, (void *) buf, sizeof(buf), 0);
-				Write(1, buf, len);
-				if(len == 0){
-					
-					// fd aus der Menge entfernen, fd schliessen, als Client loeschen, anzahl der Clients 						verringern
-					FD_CLR(clients[i].fd, read_set);
-					Close(clients[i].fd);
-					clients[i].fd = -1;
-					clientCount--;
-				}			
-			}
-		}
+	if((fd = socket(AF_INET, SOCK_SEQPACKET, IPPROTO_SCTP)) < 0){
+		perror("socket"); 
+		exit(-1);
 	}
-	Close(fd);
+	printf("SOCKET SUCCESFULL (%d)\n",fd);	
+	printf("---------------\n");
+
+	memset((void *) &server_addr, 0, sizeof(server_addr));
+	server_addr.sin_family = AF_INET;
+#ifdef HAVE_SIN_LEN
+	server_addr.sin_len = sizeof(struct sockaddr_in);
+#endif
+	if(argc == 3){
+		printf("GOT IP AND PORT FROM ARGV\n");
+		printf("---------------\n");
+		server_addr.sin_addr.s_addr = inet_addr(argv[1]);
+		server_addr.sin_port = htons(atoi(argv[2]));
+	}else{
+		printf("DEFAULT IP AND PORT (127.0.0.1:55555)\n");
+		printf("---------------\n");
+		server_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+		server_addr.sin_port = htons(55555);
+	}
+	
+	
+	if(bind(fd, (const struct sockaddr *) &server_addr, sizeof(server_addr)) < 0){
+		perror("bind");
+		close(fd);
+		exit(-1);
+	}
+	printf("BIND SUCCESFULL\n");
+	printf("---------------\n");	
+
+	printf("LISTEN FOR NEW CLIENTS\n");
+	printf("---------------\n");
+	if(listen(fd, MAX_CLIENTS)){
+		perror("listen");
+	}
+	
+	client_len = (socklen_t)sizeof(struct sockaddr_in);	
+
+	printf("HERE WE GO\n");
+	printf("---------------\n");
+	while(1){
+		memset((void *)&client_addr, 0, sizeof(struct sockaddr_in));
+		len = sctp_recvmsg(fd, (void *)buf, BUFFER_SIZE, (struct sockaddr *)&client_addr, &client_len, NULL, &flags);
+
+		printf("GOT A MESSAGE DUDE!\n");
+		printf("###################\n");
+		printf("FROM    : %s:%d\n",inet_ntoa(client_addr.sin_addr),ntohs(client_addr.sin_port));
+		printf("LEN     : %d\n",len);
+		printf("MESSAGE : %s\n",buf);
+
+		printf("\n\n AAAAND NOW -> TO THE BIN");
+	}
+
+
+	if(close(fd) < 0){
+		perror("close");
+	}
 
 	return(0);
 }

@@ -27,86 +27,134 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <netinet/sctp.h>
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <netdb.h>
-#include "Socket.h"
 
 #define BUFFER_SIZE  (1<<16)
-#define MESSAGE_SIZE (9216)
+#define OUT_STREAMS 2048
+
+char* sgets(char *buffer, size_t size);
 
 int
 main(int argc, char **argv)
 {
-	int fd;
-	int n;
-	struct fd_set* rset;
-	int done=0;
-	char buf[BUFFER_SIZE];
-	struct addrinfo *host, *buffer, hints;
-	int error;
-	rset = (struct fd_set *)malloc(sizeof(struct fd_set));
-	
+	int fd, done = 0, ppid = 1234, sid = 1, stay_in_order = 0, port = 55555;
+	struct sockaddr_in client_addr;
+     	char buffer[BUFFER_SIZE], *serveraddr = "127.0.0.1";
+     	struct iovec iov;
+     	struct sctp_status status;
+     	struct sctp_initmsg init;
+     	struct sctp_sndinfo info;
+     	//struct sctp_setadaptation ind;
+	socklen_t opt_len;
 
-	memset(&hints,0,sizeof(struct addrinfo));
-	hints.ai_family = AF_UNSPEC;
-	hints.ai_socktype = SOCK_STREAM;
-	hints.ai_flags = 0;
-	hints.ai_protocol = IPPROTO_TCP;
-
-
-	error = getaddrinfo(argv[1],argv[2],&hints,&host);
-	if(error!=0){
-		fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(error));
-		exit(EXIT_FAILURE);
+	if(argc == 6){
+		serveraddr = argv[1];
+		port = atoi(argv[2]);
+		ppid = atoi(argv[3]);
+		sid = atoi(argv[4]);
+		stay_in_order = atoi(argv[5]);
+	}else{
+		printf("%s <\"ADRESSE\"> <PORT> <PPID> <STREAMID> <ORDERED>\n",argv[0]);
+		exit(1);
 	}
 
-	for(buffer = host; buffer != NULL; buffer = buffer->ai_next){
-		fd = socket(buffer->ai_family, buffer->ai_socktype, buffer->ai_protocol);
-		if(fd == -1){
-			continue;
-		}
-		error = connect(fd, buffer->ai_addr, buffer->ai_addrlen);
-		if(error == 0){ 
-			break;
-		}
-		Close(fd);
+	if ((fd = socket(AF_INET, SOCK_STREAM, IPPROTO_SCTP)) < 0) {
+      	 	perror("socket");
+       		exit(1);
+     	}	
+
+	/** TELL THE OTHER DUDE HOW MUCH STREAMS U WANT */
+	memset(&init, 0, sizeof(init));
+     	init.sinit_num_ostreams = OUT_STREAMS;
+     	if (setsockopt(fd, IPPROTO_SCTP, SCTP_INITMSG, &init, (socklen_t)sizeof(init)) < 0) {
+       		perror("setsockopt OUT_STREAMS");
+       		exit(1);
+     	}
+	/***/
+
+	/** SET THE PPID AND (UN)ORDERED */
+	memset(&info, 0, sizeof(info));
+	info.snd_ppid = htonl(ppid);
+	if(!stay_in_order){
+    		info.snd_flags = SCTP_UNORDERED;
 	}
-	if(buffer == NULL){
-		printf("Kein Zielhost gefunden!\n");
-		exit(EXIT_FAILURE);
+	/***/
+
+	/** SET THE DATAVECTOR */
+	memset(buffer, 0, BUFFER_SIZE);
+	iov.iov_base = buffer;
+    	iov.iov_len = BUFFER_SIZE;
+	/***/
+
+	/** LETS GET READY TO RUMBLE */
+	memset(&client_addr, 0, sizeof(client_addr));
+#ifdef HAVE_SIN_LEN
+	client_addr.sin_len = sizeof(struct sockaddr_in);
+#endif
+	client_addr.sin_family      = AF_INET;
+	client_addr.sin_port        = htons(port);
+	client_addr.sin_addr.s_addr = inet_addr(serveraddr);
+
+	if (connect(fd, (const struct sockaddr *)&client_addr, sizeof(struct sockaddr_in)) < 0) {
+		perror("connect");
+		exit(1);
+     	}
+
+
+	/** SET THE CORRECT SID (HINT: GET NUMBER OF OUTGOING STREAMS AND CHECK) 
+	    MUSST BE DONE AFTER THE CONNECT */
+	memset(&status, 0, sizeof(status));
+     	opt_len = (socklen_t)sizeof(status);
+     	if (getsockopt(fd, IPPROTO_SCTP, SCTP_STATUS, &status, &opt_len) < 0) {
+		perror("getsockopt SET_CORRECT_STREAMS");
+		exit(1);
 	}
-	printf("Connected\n");
-	memset((void *) buf, '\0', sizeof(buf));
-	FD_ZERO(rset);
-	
+
+	if(sid > status.sstat_outstrms){
+		info.snd_sid = sid % status.sstat_outstrms;
+		printf("ONLY %d STREAMS AVAILABLE - OUR SID %d | NEW SID %d", status.sstat_outstrms, sid, info.snd_sid);
+	}
+	/***/
+
 	while(!done){
-		FD_SET(0, rset);
-		FD_SET(fd, rset);
-		
-		Select(fd +1, rset, (fd_set *) NULL,
-					(fd_set *) NULL,
-					(struct timeval *) NULL);
-		if(FD_ISSET(0, rset)) {
-			n = Read(0, (void *) buf, sizeof (buf));
-			if(n==0)
-				Shutdown(fd, SHUT_WR);
-			else
-				Send(fd, (void *) buf, (size_t) n, 0);
-		}
-		if(FD_ISSET(fd, rset)){
-			n =Recv(fd, (void *) buf, sizeof(buf), 0);
-			if(n==0)
-				done = 1;
-			else
-				Write(1, buf, n);
+		if(sgets(buffer,BUFFER_SIZE)==NULL){
+			done = 1;
+		}else{
+			if(sctp_sendv(fd, (const struct iovec *)&iov, 1, NULL, 0, &info, sizeof(info), SCTP_SENDV_SNDINFO, 0) < 0) {
+				perror("sctp_sendv");
+				exit(1);
+			}
 		}
 	}
 
-	close(fd);
-	free(rset);
+	if(close(fd)<0){
+		perror("close");
+	}
 	return(0);
+}
+
+char* sgets(char *buffer, size_t size)
+{
+   size_t i;
+   for ( i = 0; i < size - 1; ++i )
+   {
+      int ch = fgetc(stdin);
+      if ( ch == '\n' || ch == EOF )
+      {
+         break;
+      }
+      buffer[i] = ch;
+   }
+
+   if(i == 0){
+      return NULL;
+   }
+
+   buffer[i] = '\0';
+   return buffer;
 }
