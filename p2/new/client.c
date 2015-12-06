@@ -44,14 +44,14 @@ int print_notification(void *buf);
 
 int main(int argc, char **argv)
 {
-	int i, fd, done = 0, ppid = 1234, sid = 1, stay_in_order = 0, port = 55555, read_len = 0, flags = 0;
+	int i, fd, done = 0, ppid = 1234, sid = 1, stay_in_order = 1, port = 55555, read_len = 0, flags = 0;
 	unsigned int infotype;
 	struct sockaddr_in server_addr;
      	char buffer[BUFFER_SIZE], *serveraddr = "127.0.0.1";
      	struct iovec iov;
      	struct sctp_status status;
      	struct sctp_initmsg init;
-     	struct sctp_sndinfo info;
+     	struct sctp_sndinfo sinfo, rinfo;
      	//struct sctp_setadaptation ind;
 	socklen_t opt_len, infolen;
 	struct sctp_event event;
@@ -96,6 +96,14 @@ int main(int argc, char **argv)
 		}
 	}
 
+/** ???
+	ind.ssb_adaptation_ind  = 0x01020304;
+     	if (setsockopt(fd, IPPROTO_SCTP, SCTP_ADAPTATION_LAYER, &ind, (socklen_t)sizeof(ind)) < 0) {
+      		perror("setsockopt");
+      		exit(1);
+    	}
+*/
+
 	/** TELL THE OTHER DUDE HOW MUCH STREAMS U WANT */
 	memset(&init, 0, sizeof(init));
      	init.sinit_num_ostreams = OUT_STREAMS;
@@ -106,10 +114,11 @@ int main(int argc, char **argv)
 	/***/
 
 	/** SET THE PPID AND (UN)ORDERED */
-	memset(&info, 0, sizeof(info));
-	info.snd_ppid = htonl(ppid);
+	memset(&sinfo, 0, sizeof(sinfo));
+	sinfo.snd_ppid = htonl(ppid);
+
 	if(!stay_in_order){
-    		info.snd_flags = SCTP_UNORDERED;
+    		sinfo.snd_flags = SCTP_UNORDERED;
 	}
 	/***/
 
@@ -137,9 +146,12 @@ int main(int argc, char **argv)
 		exit(1);
 	}
 
+	
 	if(sid > status.sstat_outstrms){
-		info.snd_sid = sid % status.sstat_outstrms;
-		printf("ONLY %d STREAMS AVAILABLE - OUR SID %d | NEW SID %d", status.sstat_outstrms, sid, info.snd_sid);
+		sinfo.snd_sid = sid % status.sstat_outstrms;
+		printf("ONLY %d STREAMS AVAILABLE - OUR SID %d | NEW SID %d", status.sstat_outstrms, sid, sinfo.snd_sid);
+	}else{
+		sinfo.snd_sid = sid;
 	}
 	/***/
 
@@ -175,30 +187,32 @@ int main(int argc, char **argv)
 			if(read_len==1){
 				done = 1;
 			}else{
-				if(sctp_sendv(fd, (const struct iovec *)&iov, 1, NULL, 0, &info, sizeof(info), SCTP_SENDV_SNDINFO, 0) < 0) {
-					perror("sctp_recvv");
+				if(sctp_sendv(fd, (const struct iovec *)&iov, 1, NULL, 0, &sinfo, sizeof(sinfo), SCTP_SENDV_SNDINFO, 0) < 0) {
+					perror("sctp_sendv");
 				}
 			}
 		}
 
 		if(FD_ISSET(fd, rset)){
-			memset(&info, 0, sizeof(info));
-			infolen = (socklen_t)sizeof(info);
+			memset(&rinfo, 0, sizeof(rinfo));
+			infolen = (socklen_t)sizeof(rinfo);
 			infotype = 0;
 
 			memset(buffer, 0, BUFFER_SIZE);	
 			iov.iov_base = buffer;
 			iov.iov_len = BUFFER_SIZE;
 
-			if(sctp_recvv(fd, &iov, 1, NULL, 0, &info, &infolen, &infotype, &flags) < 0) {
-				perror("sctp_sendv");
+			if(sctp_recvv(fd, &iov, 1, NULL, 0, &rinfo, &infolen, &infotype, &flags) < 0) {
+				perror("sctp_recvv");
 			}
 
 			if (flags & MSG_NOTIFICATION) {
 			 	if(print_notification(iov.iov_base) == 1){
 					done = 1;
 				}
-		       	}
+		       	}else{
+				printf("%s",buffer);
+			}
 		}
 	}
 

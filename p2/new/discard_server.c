@@ -83,7 +83,7 @@ int main(int argc, char** argv)
 		perror("bind");
 	}
 	
-	if(listen(fd, MAX_CLIENTS)){
+	if(listen(fd, 1)){
 		perror("listen");
 	}
 
@@ -100,6 +100,7 @@ int main(int argc, char** argv)
 	while(1){
 
 		FD_SET(fd, rset);
+		flags = 0;
 
 		if(FD_ISSET(fd, rset)){
 			memset(&info, 0, sizeof(info));
