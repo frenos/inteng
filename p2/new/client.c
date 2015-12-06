@@ -29,20 +29,23 @@
 #include <netinet/in.h>
 #include <netinet/sctp.h>
 #include <arpa/inet.h>
+#include <sys/select.h>
 #include <unistd.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <pthread.h>
 
+#define DEBUG
 #define BUFFER_SIZE  (1<<16)
 #define OUT_STREAMS 2048
 
-char* sgets(char *buffer, size_t size);
+int print_notification(void *buf);
 
-int
-main(int argc, char **argv)
+int main(int argc, char **argv)
 {
-	int fd, done = 0, ppid = 1234, sid = 1, stay_in_order = 0, port = 55555;
+	int i, fd, done = 0, ppid = 1234, sid = 1, stay_in_order = 0, port = 55555, read_len = 0, flags = 0;
+	unsigned int infotype;
 	struct sockaddr_in client_addr;
      	char buffer[BUFFER_SIZE], *serveraddr = "127.0.0.1";
      	struct iovec iov;
@@ -50,7 +53,20 @@ main(int argc, char **argv)
      	struct sctp_initmsg init;
      	struct sctp_sndinfo info;
      	//struct sctp_setadaptation ind;
-	socklen_t opt_len;
+	socklen_t opt_len, infolen;
+	struct sctp_event event;
+	uint16_t event_types[] = {SCTP_ASSOC_CHANGE,
+				SCTP_PEER_ADDR_CHANGE,
+				SCTP_REMOTE_ERROR,
+				SCTP_SEND_FAILED_EVENT,
+				SCTP_SHUTDOWN_EVENT,
+				SCTP_ADAPTATION_INDICATION,
+				SCTP_PARTIAL_DELIVERY_EVENT,
+				SCTP_AUTHENTICATION_EVENT,
+				SCTP_SENDER_DRY_EVENT
+				};
+	struct fd_set* rset;
+
 
 	if(argc == 6){
 		serveraddr = argv[1];
@@ -60,13 +76,25 @@ main(int argc, char **argv)
 		stay_in_order = atoi(argv[5]);
 	}else{
 		printf("%s <\"ADRESSE\"> <PORT> <PPID> <STREAMID> <ORDERED>\n",argv[0]);
-		exit(1);
+		printf("### DEFAULT ###\n");
+		printf("%s \"%s\" %d %d %d %d\n",argv[0],serveraddr,port,ppid,sid,stay_in_order);
 	}
 
 	if ((fd = socket(AF_INET, SOCK_STREAM, IPPROTO_SCTP)) < 0) {
       	 	perror("socket");
        		exit(1);
-     	}	
+     	}
+
+	/** PREPARE EVENTS FOR NOTIFICATIONS */
+	memset(&event, 0, sizeof(event));
+	event.se_on = 1;	
+	for(i = 0; i < sizeof(event_types)/sizeof(uint16_t); i++){
+		event.se_type = event_types[i];
+		if(setsockopt(fd, IPPROTO_SCTP, SCTP_EVENT, &event, sizeof(event)) < 0){
+			perror("setsockopt EVENTS");
+			exit(1);
+		}
+	}
 
 	/** TELL THE OTHER DUDE HOW MUCH STREAMS U WANT */
 	memset(&init, 0, sizeof(init));
@@ -83,12 +111,6 @@ main(int argc, char **argv)
 	if(!stay_in_order){
     		info.snd_flags = SCTP_UNORDERED;
 	}
-	/***/
-
-	/** SET THE DATAVECTOR */
-	memset(buffer, 0, BUFFER_SIZE);
-	iov.iov_base = buffer;
-    	iov.iov_len = BUFFER_SIZE;
 	/***/
 
 	/** LETS GET READY TO RUMBLE */
@@ -121,40 +143,109 @@ main(int argc, char **argv)
 	}
 	/***/
 
+	/** CREATE FD_SET */
+
+	rset = (struct fd_set *)malloc(sizeof(struct fd_set));
+	if(rset == NULL){
+		perror("malloc");
+	}
+
+	FD_ZERO(rset);
+	/***/
+
 	while(!done){
-		if(sgets(buffer,BUFFER_SIZE)==NULL){
-			done = 1;
-		}else{
-			if(sctp_sendv(fd, (const struct iovec *)&iov, 1, NULL, 0, &info, sizeof(info), SCTP_SENDV_SNDINFO, 0) < 0) {
-				perror("sctp_sendv");
-				exit(1);
+
+		FD_SET(0, rset);
+		FD_SET(fd, rset);
+
+		if(select(fd +1, rset, (fd_set *) NULL,	(fd_set *) NULL, (struct timeval *) NULL) == -1){
+			perror("select");
+		}
+
+		if(FD_ISSET(0, rset)) {
+			memset(buffer, 0, BUFFER_SIZE);	
+			iov.iov_base = buffer;
+
+			if((read_len = read(0, (void *) buffer, sizeof (buffer))) == -1){
+				perror("read");
 			}
+
+    			iov.iov_len = read_len;
+
+			if(read_len==1){
+				done = 1;
+			}else{
+				if(sctp_sendv(fd, (const struct iovec *)&iov, 1, NULL, 0, &info, sizeof(info), SCTP_SENDV_SNDINFO, 0) < 0) {
+					perror("sctp_sendv");
+				}
+			}
+		}
+
+		if(FD_ISSET(fd, rset)){
+			memset(&info, 0, sizeof(info));
+			infolen = (socklen_t)sizeof(info);
+			infotype = 0;
+
+			memset(buffer, 0, BUFFER_SIZE);	
+			iov.iov_base = buffer;
+			iov.iov_len = BUFFER_SIZE;
+
+			if(sctp_recvv(fd, &iov, 1, NULL, 0, &info, &infolen, &infotype, &flags) < 0) {
+				perror("sctp_sendv");
+			}
+
+			if (flags & MSG_NOTIFICATION) {
+			 	if(print_notification(iov.iov_base) == 1){
+					done = 1;
+				}
+		       	}
 		}
 	}
 
-	if(close(fd)<0){
+	if(close(fd) < 0){
 		perror("close");
 	}
+
+	free(rset);
+
 	return(0);
 }
 
-char* sgets(char *buffer, size_t size)
-{
-   size_t i;
-   for ( i = 0; i < size - 1; ++i )
-   {
-      int ch = fgetc(stdin);
-      if ( ch == '\n' || ch == EOF )
-      {
-         break;
-      }
-      buffer[i] = ch;
-   }
 
-   if(i == 0){
-      return NULL;
-   }
+int print_notification(void *buf){
+	union sctp_notification *snp;
+	snp = buf;
+	printf("NOTIFICATION: ");
+	switch(snp->sn_header.sn_type){
+		case SCTP_ASSOC_CHANGE:
+			printf("FANCY ASSOC CHANGE\n");
+			break;
+		case SCTP_PEER_ADDR_CHANGE:
+			printf("FANCY PERR ADDR CHANGE\n");			
+			break;
+		case SCTP_REMOTE_ERROR:
+			printf("FANCY REMOTE ERROR\n");
+			break;
+		case SCTP_SEND_FAILED_EVENT:
+			printf("FANCY SEND FAILED EVENT\n");
+			break;
+		case SCTP_SHUTDOWN_EVENT:
+			printf("FANCY SHUTDOWN EVENT\n");
+			return 1;
+			break;
+		case SCTP_ADAPTATION_INDICATION:
+			printf("FANCY ADAPTATION INDICATION\n");
+			break;
+		case SCTP_PARTIAL_DELIVERY_EVENT:
+			printf("FANCY PARTIAL DELIVERY EVENT\n");
+			break;
+		case SCTP_AUTHENTICATION_EVENT:
+			printf("FANCY AUTHENTICATION EVENT\n");
+			break;
+		case SCTP_SENDER_DRY_EVENT:
+			printf("FANCY SENDER DRY EVENT\n");			
+			break;
+	}
 
-   buffer[i] = '\0';
-   return buffer;
+	return 0;
 }
