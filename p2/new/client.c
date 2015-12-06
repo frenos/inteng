@@ -46,7 +46,7 @@ int main(int argc, char **argv)
 {
 	int i, fd, done = 0, ppid = 1234, sid = 1, stay_in_order = 0, port = 55555, read_len = 0, flags = 0;
 	unsigned int infotype;
-	struct sockaddr_in client_addr;
+	struct sockaddr_in server_addr;
      	char buffer[BUFFER_SIZE], *serveraddr = "127.0.0.1";
      	struct iovec iov;
      	struct sctp_status status;
@@ -114,15 +114,15 @@ int main(int argc, char **argv)
 	/***/
 
 	/** LETS GET READY TO RUMBLE */
-	memset(&client_addr, 0, sizeof(client_addr));
+	memset(&server_addr, 0, sizeof(server_addr));
 #ifdef HAVE_SIN_LEN
-	client_addr.sin_len = sizeof(struct sockaddr_in);
+	server_addr.sin_len = sizeof(struct sockaddr_in);
 #endif
-	client_addr.sin_family      = AF_INET;
-	client_addr.sin_port        = htons(port);
-	client_addr.sin_addr.s_addr = inet_addr(serveraddr);
+	server_addr.sin_family      = AF_INET;
+	server_addr.sin_port        = htons(port);
+	server_addr.sin_addr.s_addr = inet_addr(serveraddr);
 
-	if (connect(fd, (const struct sockaddr *)&client_addr, sizeof(struct sockaddr_in)) < 0) {
+	if (connect(fd, (const struct sockaddr *)&server_addr, sizeof(struct sockaddr_in)) < 0) {
 		perror("connect");
 		exit(1);
      	}
@@ -154,7 +154,7 @@ int main(int argc, char **argv)
 	/***/
 
 	while(!done){
-
+		flags = 0;
 		FD_SET(0, rset);
 		FD_SET(fd, rset);
 
@@ -176,7 +176,7 @@ int main(int argc, char **argv)
 				done = 1;
 			}else{
 				if(sctp_sendv(fd, (const struct iovec *)&iov, 1, NULL, 0, &info, sizeof(info), SCTP_SENDV_SNDINFO, 0) < 0) {
-					perror("sctp_sendv");
+					perror("sctp_recvv");
 				}
 			}
 		}

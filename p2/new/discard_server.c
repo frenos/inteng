@@ -36,74 +36,101 @@
 
 #define BUFFER_SIZE (1<<16)
 #define MAX_CLIENTS 1
+#define TIMEOUT 0 // AUTOCLOSE OFF
 
 int main(int argc, char** argv)
 {
-	int fd, len, flags;
-	struct sockaddr_in server_addr, client_addr;
-	socklen_t client_len;
-	char buf[BUFFER_SIZE];
+	int fd, port = 55555, read_len = 0, flags = 0, timeout;
+	unsigned int infotype;
+	struct sockaddr_in addr;
+     	char buffer[BUFFER_SIZE], *serveraddr = "127.0.0.1";
+     	struct iovec iov;
+     	struct sctp_sndinfo info;
+	socklen_t fromlen, infolen;
+	struct fd_set* rset;
+
+	if(argc == 3){
+		serveraddr = argv[1];
+		port = atoi(argv[2]);
+	}else{
+		printf("%s <\"ADRESSE\"> <PORT> \n",argv[0]);
+		printf("### DEFAULT ###\n");
+		printf("%s \"%s\" %d \n",argv[0],serveraddr,port);
+	}
 
 	if((fd = socket(AF_INET, SOCK_SEQPACKET, IPPROTO_SCTP)) < 0){
 		perror("socket"); 
-		exit(-1);
 	}
-	printf("SOCKET SUCCESFULL (%d)\n",fd);	
-	printf("---------------\n");
 
-	memset((void *) &server_addr, 0, sizeof(server_addr));
-	server_addr.sin_family = AF_INET;
+	/** Configure auto-close timer. */
+	timeout = TIMEOUT;
+	if (setsockopt(fd, IPPROTO_SCTP, SCTP_AUTOCLOSE, &timeout, sizeof(timeout)) < 0) {
+		perror("setsockopt SCTP_AUTOCLOSE");
+	}
+	/***/
+
+
+	memset((void *) &addr, 0, sizeof(addr));
+	addr.sin_family = AF_INET;
 #ifdef HAVE_SIN_LEN
-	server_addr.sin_len = sizeof(struct sockaddr_in);
+	addr.sin_len = sizeof(struct sockaddr_in);
 #endif
-	if(argc == 3){
-		printf("GOT IP AND PORT FROM ARGV\n");
-		printf("---------------\n");
-		server_addr.sin_addr.s_addr = inet_addr(argv[1]);
-		server_addr.sin_port = htons(atoi(argv[2]));
-	}else{
-		printf("DEFAULT IP AND PORT (127.0.0.1:55555)\n");
-		printf("---------------\n");
-		server_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
-		server_addr.sin_port = htons(55555);
-	}
+	addr.sin_addr.s_addr = inet_addr(serveraddr);
+	addr.sin_port = htons(port);
 	
 	
-	if(bind(fd, (const struct sockaddr *) &server_addr, sizeof(server_addr)) < 0){
+	if(bind(fd, (const struct sockaddr *) &addr, sizeof(addr)) < 0){
 		perror("bind");
-		close(fd);
-		exit(-1);
 	}
-	printf("BIND SUCCESFULL\n");
-	printf("---------------\n");	
-
-	printf("LISTEN FOR NEW CLIENTS\n");
-	printf("---------------\n");
+	
 	if(listen(fd, MAX_CLIENTS)){
 		perror("listen");
 	}
+
+	/** CREATE FD_SET */
+	rset = (struct fd_set *)malloc(sizeof(struct fd_set));
+	if(rset == NULL){
+		perror("malloc");
+	}
+	FD_ZERO(rset);
+	/***/
 	
-	client_len = (socklen_t)sizeof(struct sockaddr_in);	
+	fromlen = (socklen_t)sizeof(addr);
 
-	printf("HERE WE GO\n");
-	printf("---------------\n");
 	while(1){
-		memset((void *)&client_addr, 0, sizeof(struct sockaddr_in));
-		len = sctp_recvmsg(fd, (void *)buf, BUFFER_SIZE, (struct sockaddr *)&client_addr, &client_len, NULL, &flags);
 
-		printf("GOT A MESSAGE DUDE!\n");
-		printf("###################\n");
-		printf("FROM    : %s:%d\n",inet_ntoa(client_addr.sin_addr),ntohs(client_addr.sin_port));
-		printf("LEN     : %d\n",len);
-		printf("MESSAGE : %s\n",buf);
+		FD_SET(fd, rset);
 
-		printf("\n\n AAAAND NOW -> TO THE BIN");
+		if(FD_ISSET(fd, rset)){
+			memset(&info, 0, sizeof(info));
+			infolen = (socklen_t)sizeof(info);
+			infotype = 0;
+
+			memset(buffer, 0, BUFFER_SIZE);	
+			iov.iov_base = buffer;
+			iov.iov_len = BUFFER_SIZE;
+
+			memset(&addr, 0, sizeof(addr));
+			if((read_len = sctp_recvv(fd, &iov, 1, (struct sockaddr *)&addr, &fromlen, &info, &infolen, &infotype, &flags)) < 0) {
+				perror("sctp_recvv");
+			}
+
+			printf("GOT A MESSAGE DUDE!\n");
+			printf("###################\n");
+			printf("FROM    : %s:%d\n",inet_ntoa(addr.sin_addr),ntohs(addr.sin_port));
+			printf("LEN     : %d\n",read_len);
+			printf("MESSAGE : %s",buffer);
+			printf("BUT NOONE CARES!\n");
+			printf("-------------------\n");
+		}
 	}
 
 
 	if(close(fd) < 0){
 		perror("close");
 	}
+	
+	free(rset);
 
 	return(0);
 }
