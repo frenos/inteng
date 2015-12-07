@@ -164,7 +164,6 @@ int main(int argc, char **argv)
 
 	FD_ZERO(rset);
 	/***/
-
 	while(!done){
 		flags = 0;
 		FD_SET(0, rset);
@@ -177,7 +176,6 @@ int main(int argc, char **argv)
 		if(FD_ISSET(0, rset)) {
 			memset(buffer, 0, BUFFER_SIZE);	
 			iov.iov_base = buffer;
-
 			if((read_len = read(0, (void *) buffer, sizeof (buffer))) == -1){
 				perror("read");
 			}
@@ -211,7 +209,7 @@ int main(int argc, char **argv)
 					done = 1;
 				}
 		       	}else{
-				printf("%s",buffer);
+				printf("INCOME: %s",buffer);
 			}
 		}
 	}

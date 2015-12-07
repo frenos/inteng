@@ -150,27 +150,34 @@ void *client_handle(void *arg){
 		if((read_len = sctp_recvv(client->fd, &iov, 1, (struct sockaddr *)&(client->client_addr), 
 					&(client->client_addr_len), &rinfo, &rinfolen, &rinfotype, &flags)) < 0) {
 			perror("sctp_recvv");
+		}else if(read_len == 0){
+			break;
 		}
 
 		switch (rinfotype) {
          		case SCTP_RECVV_RCVINFO:
+/**
 				printf("RCVINFO \n");
 				printf("rcv_sid: %u\n",rinfo.rcv_sid);
 				printf("rcv_ppid: %u\n",ntohl(rinfo.rcv_ppid));
 				printf("rcv_flags: %u\n",rinfo.rcv_flags);
+*/
 				sinfo.snd_sid = rinfo.rcv_sid;
 				sinfo.snd_ppid = rinfo.rcv_ppid;
 				sinfo.snd_flags = rinfo.rcv_flags;
 			break;
 		}
 
-		printf("MESSAGE : %s",buffer);
+		printf("CLIENT->FD: %d\n",client->fd);
+		printf("MESSAGE   : %s",buffer);
 		printf("-------------------\n");
 
+		iov.iov_base = buffer;
+		iov.iov_len = read_len;
 
-		// ABSTURZ
-		if(sctp_sendv(client->fd, (const struct iovec *)&iov, 1, (struct sockaddr *)&(client->client_addr), 
-			0, &sinfo, sizeof(sinfo), SCTP_SENDV_SNDINFO, 0) < 0) {
+
+		if(sctp_sendv(client->fd, &iov, 1, (struct sockaddr *)&(client->client_addr), 
+			1, &sinfo, sizeof(sinfo), SCTP_SENDV_SNDINFO, 0) < 0) {
 			perror("sctp_sendv");
 		}	
 
