@@ -24,7 +24,6 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netinet/sctp.h>
@@ -34,7 +33,6 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <pthread.h>
 
 #define DEBUG
 #define BUFFER_SIZE  (1<<16)
@@ -44,7 +42,7 @@ int print_notification(void *buf);
 
 int main(int argc, char **argv)
 {
-	int i, fd, done = 0, ppid = 1234, sid = 1, stay_in_order = 1, port = 55555, read_len = 0, flags = 0;
+	int i, fd, done = 0, ppid = 1234, sid = 1, stay_in_order = 1, port = 55555, read_len = 0, flags = 0, notification;
 	unsigned int infotype;
 	struct sockaddr_in server_addr;
      	char buffer[BUFFER_SIZE], *serveraddr = "127.0.0.1";
@@ -52,7 +50,9 @@ int main(int argc, char **argv)
      	struct sctp_status status;
      	struct sctp_initmsg init;
      	struct sctp_sndinfo sinfo, rinfo;
-     	//struct sctp_setadaptation ind;
+     	struct sctp_paddrinfo paddrinfo;
+	struct sctp_rtoinfo rtoinfo;
+	struct sctp_paddrparams heartbeat;
 	socklen_t opt_len, infolen;
 	struct sctp_event event;
 	uint16_t event_types[] = {SCTP_ASSOC_CHANGE,
@@ -66,6 +66,7 @@ int main(int argc, char **argv)
 				SCTP_SENDER_DRY_EVENT
 				};
 	struct fd_set* rset;
+	struct timeval timeout;
 
 
 	if(argc == 6){
@@ -80,99 +81,97 @@ int main(int argc, char **argv)
 		printf("%s \"%s\" %d %d %d %d\n",argv[0],serveraddr,port,ppid,sid,stay_in_order);
 	}
 
-	if ((fd = socket(AF_INET, SOCK_STREAM, IPPROTO_SCTP)) < 0) {
-      	 	perror("socket");
-       		exit(1);
-     	}
+	if(!stay_in_order)
+    		sinfo.snd_flags = SCTP_UNORDERED;     	
 
-	/** PREPARE EVENTS FOR NOTIFICATIONS */
 	memset(&event, 0, sizeof(event));
-	event.se_on = 1;	
-	for(i = 0; i < sizeof(event_types)/sizeof(uint16_t); i++){
-		event.se_type = event_types[i];
-		if(setsockopt(fd, IPPROTO_SCTP, SCTP_EVENT, &event, sizeof(event)) < 0){
-			perror("setsockopt EVENTS");
-			exit(1);
-		}
-	}
-
-/** ???
-	ind.ssb_adaptation_ind  = 0x01020304;
-     	if (setsockopt(fd, IPPROTO_SCTP, SCTP_ADAPTATION_LAYER, &ind, (socklen_t)sizeof(ind)) < 0) {
-      		perror("setsockopt");
-      		exit(1);
-    	}
-*/
-
-	/** TELL THE OTHER DUDE HOW MUCH STREAMS U WANT */
-	memset(&init, 0, sizeof(init));
-     	init.sinit_num_ostreams = OUT_STREAMS;
-     	if (setsockopt(fd, IPPROTO_SCTP, SCTP_INITMSG, &init, (socklen_t)sizeof(init)) < 0) {
-       		perror("setsockopt OUT_STREAMS");
-       		exit(1);
-     	}
-	/***/
-
-	/** SET THE PPID AND (UN)ORDERED */
 	memset(&sinfo, 0, sizeof(sinfo));
+	memset(&heartbeat, 0, sizeof(struct sctp_paddrparams));
+	memset(&rtoinfo, 0, sizeof(struct sctp_rtoinfo));
+	memset(&init, 0, sizeof(init));
+	memset(&server_addr, 0, sizeof(server_addr));
+	memset(&status, 0, sizeof(status));
+	rset = (struct fd_set *)malloc(sizeof(struct fd_set));
+	memset(&timeout, 0, sizeof(timeout));
+	memset(&paddrinfo, 0, sizeof(paddrinfo));
+
+	event.se_on = 1;
+
 	sinfo.snd_ppid = htonl(ppid);
 
-	if(!stay_in_order){
-    		sinfo.snd_flags = SCTP_UNORDERED;
-	}
-	/***/
+	heartbeat.spp_hbinterval = 100;
 
-	/** LETS GET READY TO RUMBLE */
-	memset(&server_addr, 0, sizeof(server_addr));
+	rtoinfo.srto_max = 2000;
+	//rtoinfo.srto_min = 50;
+
+	init.sinit_num_ostreams = OUT_STREAMS;
+	init.sinit_max_init_timeo = 200;
+
 #ifdef HAVE_SIN_LEN
 	server_addr.sin_len = sizeof(struct sockaddr_in);
 #endif
-	server_addr.sin_family      = AF_INET;
+	server_addr.sin_family      = PF_INET;
 	server_addr.sin_port        = htons(port);
 	server_addr.sin_addr.s_addr = inet_addr(serveraddr);
 
-	if (connect(fd, (const struct sockaddr *)&server_addr, sizeof(struct sockaddr_in)) < 0) {
-		perror("connect");
-		exit(1);
-     	}
+	opt_len = (socklen_t)sizeof(status);
 
+	sinfo.snd_sid = sid;
 
-	/** SET THE CORRECT SID (HINT: GET NUMBER OF OUTGOING STREAMS AND CHECK) 
-	    MUSST BE DONE AFTER THE CONNECT */
-	memset(&status, 0, sizeof(status));
-     	opt_len = (socklen_t)sizeof(status);
-     	if (getsockopt(fd, IPPROTO_SCTP, SCTP_STATUS, &status, &opt_len) < 0) {
-		perror("getsockopt SET_CORRECT_STREAMS");
-		exit(1);
+	if ((fd = socket(PF_INET, SOCK_STREAM, IPPROTO_SCTP)) < 0){
+      	 	perror("socket");
+		exit(-1);
 	}
-
 	
-	if(sid > status.sstat_outstrms){
-		sinfo.snd_sid = sid % status.sstat_outstrms;
-		printf("ONLY %d STREAMS AVAILABLE - OUR SID %d | NEW SID %d", status.sstat_outstrms, sid, sinfo.snd_sid);
-	}else{
-		sinfo.snd_sid = sid;
+	for(i = 0; i < sizeof(event_types)/sizeof(uint16_t); i++){
+		event.se_type = event_types[i];
+		if(setsockopt(fd, IPPROTO_SCTP, SCTP_EVENT, &event, sizeof(event)) < 0)
+			perror("setsockopt EVENTS");
 	}
-	/***/
 
-	/** CREATE FD_SET */
 
-	rset = (struct fd_set *)malloc(sizeof(struct fd_set));
+     	if (setsockopt(fd, IPPROTO_SCTP, SCTP_PEER_ADDR_PARAMS, &heartbeat, (socklen_t)sizeof(heartbeat)) < 0){
+       		perror("setsockopt heartbeat");
+	}
+
+     	if (setsockopt(fd, IPPROTO_SCTP, SCTP_RTOINFO, &rtoinfo, (socklen_t)sizeof(rtoinfo)) < 0){
+       		perror("setsockopt rtoinfo");
+	}
+     	
+     	if (setsockopt(fd, IPPROTO_SCTP, SCTP_INITMSG, &init, (socklen_t)sizeof(init)) < 0){
+       		perror("setsockopt OUT_STREAMS");
+	}
+
+	if (connect(fd, (const struct sockaddr *)&server_addr, sizeof(struct sockaddr_in)) < 0){
+		perror("connect");
+		exit(-1);
+	}
+
+     	if (getsockopt(fd, IPPROTO_SCTP, SCTP_STATUS, &status, &opt_len) < 0){
+		perror("getsockopt SET_CORRECT_STREAMS");
+	}
+	
+	if(sinfo.snd_sid > status.sstat_outstrms){
+		sinfo.snd_sid = sinfo.snd_sid % status.sstat_outstrms;
+	}
+	
 	if(rset == NULL){
 		perror("malloc");
 	}
 
 	FD_ZERO(rset);
-	/***/
+
+	timeout.tv_sec = 1;
+
 	while(!done){
 		flags = 0;
 		FD_SET(0, rset);
 		FD_SET(fd, rset);
 
-		if(select(fd +1, rset, (fd_set *) NULL,	(fd_set *) NULL, (struct timeval *) NULL) == -1){
+		if(select(fd +1, rset, (fd_set *) NULL,	(fd_set *) NULL, (struct timeval *) &timeout) == -1){
 			perror("select");
 		}
-
+		
 		if(FD_ISSET(0, rset)) {
 			memset(buffer, 0, BUFFER_SIZE);	
 			iov.iov_base = buffer;
@@ -189,9 +188,7 @@ int main(int argc, char **argv)
 					perror("sctp_sendv");
 				}
 			}
-		}
-
-		if(FD_ISSET(fd, rset)){
+		}else if(FD_ISSET(fd, rset)){
 			memset(&rinfo, 0, sizeof(rinfo));
 			infolen = (socklen_t)sizeof(rinfo);
 			infotype = 0;
@@ -200,17 +197,29 @@ int main(int argc, char **argv)
 			iov.iov_base = buffer;
 			iov.iov_len = BUFFER_SIZE;
 
-			if(sctp_recvv(fd, &iov, 1, NULL, 0, &rinfo, &infolen, &infotype, &flags) < 0) {
+			if(sctp_recvv(fd, &iov, 1, NULL, 0, &rinfo, &infolen, &infotype, &flags) < 0){
 				perror("sctp_recvv");
 			}
-
-			if (flags & MSG_NOTIFICATION) {
-			 	if(print_notification(iov.iov_base) == 1){
+				
+			notification = 0;
+			if (flags & MSG_NOTIFICATION) {			
+			 	if((notification = print_notification(iov.iov_base)) == 1){
 					done = 1;
 				}
 		       	}else{
 				printf("INCOME: %s",buffer);
 			}
+		}else {
+			opt_len = sizeof(paddrinfo);
+			if (getsockopt(fd, IPPROTO_SCTP, SCTP_GET_PEER_ADDR_INFO, &paddrinfo, &opt_len) < 0){
+				perror("getsockopt");
+			}
+	
+			printf("RTO: %d | MTU: %d | SRTT: %d\n",
+				paddrinfo.spinfo_rto,
+				paddrinfo.spinfo_mtu,
+				paddrinfo.spinfo_srtt);
+			fflush(stdout);
 		}
 	}
 
@@ -255,7 +264,8 @@ int print_notification(void *buf){
 			printf("FANCY AUTHENTICATION EVENT\n");
 			break;
 		case SCTP_SENDER_DRY_EVENT:
-			printf("FANCY SENDER DRY EVENT\n");			
+			printf("FANCY SENDER DRY EVENT\n");
+			return 2;			
 			break;
 	}
 
