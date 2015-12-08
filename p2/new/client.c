@@ -102,7 +102,7 @@ int main(int argc, char **argv)
 	heartbeat.spp_hbinterval = 100;
 
 	rtoinfo.srto_max = 2000;
-	//rtoinfo.srto_min = 50;
+	rtoinfo.srto_min = 50;
 
 	init.sinit_num_ostreams = OUT_STREAMS;
 	init.sinit_max_init_timeo = 200;
@@ -110,7 +110,7 @@ int main(int argc, char **argv)
 #ifdef HAVE_SIN_LEN
 	server_addr.sin_len = sizeof(struct sockaddr_in);
 #endif
-	server_addr.sin_family      = PF_INET;
+	server_addr.sin_family      = AF_INET;
 	server_addr.sin_port        = htons(port);
 	server_addr.sin_addr.s_addr = inet_addr(serveraddr);
 
@@ -118,7 +118,7 @@ int main(int argc, char **argv)
 
 	sinfo.snd_sid = sid;
 
-	if ((fd = socket(PF_INET, SOCK_STREAM, IPPROTO_SCTP)) < 0){
+	if ((fd = socket(AF_INET, SOCK_STREAM, IPPROTO_SCTP)) < 0){
       	 	perror("socket");
 		exit(-1);
 	}
@@ -134,12 +134,12 @@ int main(int argc, char **argv)
        		perror("setsockopt heartbeat");
 	}
 
-     	if (setsockopt(fd, IPPROTO_SCTP, SCTP_RTOINFO, &rtoinfo, (socklen_t)sizeof(rtoinfo)) < 0){
+     	if (setsockopt(fd, IPPROTO_SCTP, SCTP_RTOINFO , &rtoinfo, sizeof(rtoinfo)) < 0){
        		perror("setsockopt rtoinfo");
 	}
      	
      	if (setsockopt(fd, IPPROTO_SCTP, SCTP_INITMSG, &init, (socklen_t)sizeof(init)) < 0){
-       		perror("setsockopt OUT_STREAMS");
+       		perror("setsockopt init");
 	}
 
 	if (connect(fd, (const struct sockaddr *)&server_addr, sizeof(struct sockaddr_in)) < 0){
@@ -148,7 +148,7 @@ int main(int argc, char **argv)
 	}
 
      	if (getsockopt(fd, IPPROTO_SCTP, SCTP_STATUS, &status, &opt_len) < 0){
-		perror("getsockopt SET_CORRECT_STREAMS");
+		perror("getsockopt status");
 	}
 	
 	if(sinfo.snd_sid > status.sstat_outstrms){
@@ -160,13 +160,13 @@ int main(int argc, char **argv)
 	}
 
 	FD_ZERO(rset);
+	FD_SET(fd, rset);
 
 	timeout.tv_sec = 1;
 
 	while(!done){
 		flags = 0;
 		FD_SET(0, rset);
-		FD_SET(fd, rset);
 
 		if(select(fd +1, rset, (fd_set *) NULL,	(fd_set *) NULL, (struct timeval *) &timeout) == -1){
 			perror("select");
@@ -199,6 +199,8 @@ int main(int argc, char **argv)
 
 			if(sctp_recvv(fd, &iov, 1, NULL, 0, &rinfo, &infolen, &infotype, &flags) < 0){
 				perror("sctp_recvv");
+			}else{
+				FD_SET(fd, rset);
 			}
 				
 			notification = 0;
@@ -210,16 +212,19 @@ int main(int argc, char **argv)
 				printf("INCOME: %s",buffer);
 			}
 		}else {
+			memset(&paddrinfo, 0, sizeof(paddrinfo));
 			opt_len = sizeof(paddrinfo);
+			memcpy((void *)&paddrinfo.spinfo_address, (void *)&server_addr, sizeof(server_addr)); 
 			if (getsockopt(fd, IPPROTO_SCTP, SCTP_GET_PEER_ADDR_INFO, &paddrinfo, &opt_len) < 0){
-				perror("getsockopt");
-			}
+				perror("getsockopt paddrinfo");
+			}else{
 	
-			printf("RTO: %d | MTU: %d | SRTT: %d\n",
-				paddrinfo.spinfo_rto,
-				paddrinfo.spinfo_mtu,
-				paddrinfo.spinfo_srtt);
-			fflush(stdout);
+				printf("RTO: %d | MTU: %d | SRTT: %d\n",
+					paddrinfo.spinfo_rto,
+					paddrinfo.spinfo_mtu,
+					paddrinfo.spinfo_srtt);
+				fflush(stdout);
+			}
 		}
 	}
 
@@ -252,7 +257,7 @@ int print_notification(void *buf){
 			break;
 		case SCTP_SHUTDOWN_EVENT:
 			printf("FANCY SHUTDOWN EVENT\n");
-			return 1;
+			return 0;
 			break;
 		case SCTP_ADAPTATION_INDICATION:
 			printf("FANCY ADAPTATION INDICATION\n");
