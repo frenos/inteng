@@ -101,7 +101,8 @@ int main(int argc, char **argv)
 
 	heartbeat.spp_hbinterval = 100;
 
-	rtoinfo.srto_max = 2000;
+	rtoinfo.srto_max = 200;
+	rtoinfo.srto_initial = 100;
 	rtoinfo.srto_min = 50;
 
 	init.sinit_num_ostreams = OUT_STREAMS;
@@ -217,6 +218,7 @@ int main(int argc, char **argv)
 			memcpy((void *)&paddrinfo.spinfo_address, (void *)&server_addr, sizeof(server_addr)); 
 			if (getsockopt(fd, IPPROTO_SCTP, SCTP_GET_PEER_ADDR_INFO, &paddrinfo, &opt_len) < 0){
 				perror("getsockopt paddrinfo");
+				done = 1;
 			}else{
 	
 				printf("RTO: %d | MTU: %d | SRTT: %d\n",
